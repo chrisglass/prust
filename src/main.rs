@@ -1,7 +1,11 @@
 extern crate actix_web;
+extern crate handlebars;
 extern crate uuid;
+#[macro_use]
+extern crate serde_json;
 
 use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
+use handlebars::Handlebars;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -14,9 +18,14 @@ struct Paste {
 }
 
 #[get("/")]
-async fn index() -> impl Responder {
+async fn index(hb: web::Data<Handlebars<'_>>) -> impl Responder {
     // Render a moustache or whatever template showing the paste form
-    format!("Hello world")
+    let data = json!({
+        "name": "Chris"
+    });
+    let body = hb.render("index", &data).unwrap();
+
+    HttpResponse::Ok().body(body)
 }
 
 #[get("/{uuid}")]
@@ -72,11 +81,20 @@ async fn main() -> std::io::Result<()> {
     let state: web::Data<RwLock<HashMap<String, Paste>>> =
         web::Data::new(RwLock::new(HashMap::new()));
 
+    // Similarly we pass handlebars as an app data. this one doesn't have to be mut though
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_templates_directory(".html", "./templates")
+        .unwrap();
+
+    let handlebars_ref = web::Data::new(handlebars);
+
     HttpServer::new(
         // We need to move the state into the app closure here
         move || {
             App::new()
                 .app_data(state.clone()) // One app per connection, so we need to .clone() here
+                .app_data(handlebars_ref.clone()) // Same here, one app per connection so we need to clone()
                 .service(index)
                 .service(paste)
                 .service(new_paste)

@@ -1,90 +1,88 @@
-extern crate chrono;
-extern crate handlebars;
-extern crate hyper;
-extern crate serde_json;
+extern crate actix_web;
 extern crate uuid;
 
-use chrono::prelude::*;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use uuid::Uuid;
+use std::sync::RwLock;
 
 #[derive(Debug)]
 struct Paste {
+    uuid: uuid::Uuid,
     author: String,
-    paste: String,
-    created: DateTime<Local>,
+    content: String,
+    //created: DateTime<Local>,
 }
 
-fn get_index(_req: Request<Body>) -> Body {
-    Body::from("Try posting data to /echo")
+#[get("/")]
+async fn index() -> impl Responder {
+    // Render a moustache or whatever template showing the paste form
+    format!("Hello world")
 }
 
-fn get_paste(id: String) -> Body {
-    Body::from(format!("This is paste for id {}", id))
-}
+#[get("/{uuid}")]
+async fn paste(
+    web::Path(uuid): web::Path<String>,
+    data: web::Data<RwLock<HashMap<String, Paste>>>,
+) -> impl Responder {
+    // In this case we are free to use only a read lock
+    let map = data.read().unwrap();
 
-async fn router(
-    req: Request<Body>,
-    // data: Mutex<HashMap<&str, Paste>>,
-) -> Result<Response<Body>, Infallible> {
-    let mut response = Response::new(Body::empty());
-
-    // match (req.method(), req.uri().path()) {
-    match req.method() {
-        &Method::GET => {
-            match req.uri().path() {
-                "/" => {
-                    // If the get is on the "/" assume that's the index.
-                    *response.body_mut() = get_index(req);
-                }
-                _ => {
-                    // If the get is for anything else, assume we're being asked about an ID
-                    let splits: Vec<&str> = req.uri().path().split("/").collect();
-                    let id = splits[1];
-                    *response.body_mut() = get_paste(id.to_owned());
-                }
-            }
-        }
-
-        &Method::POST => {
-            // Parse the form contents into a new Paste struct
-            // Generate a new uuid for the paste
-            // Save the Paste in the "DB"
-            // Return a redirect to the appropriate GET
-        }
-        _ => {
-            *response.status_mut() = StatusCode::NOT_FOUND;
-        }
+    match map.get(&uuid) {
+        Some(paste) => HttpResponse::Ok().body(format!(
+            "The paste:\n  uuid: {}\n  author: {}\n  content: {}\n",
+            paste.uuid.to_string(),
+            paste.author,
+            paste.content
+        )),
+        None => HttpResponse::NotFound().body("404 not found"),
     }
-
-    Ok(response)
 }
 
-#[tokio::main]
-async fn main() {
+#[post("/")]
+async fn new_paste(data: web::Data<RwLock<HashMap<String, Paste>>>) -> impl Responder {
+    // Our mutable state. We hold the write lock to the state here.
+    let mut map = data.write().unwrap();
+
+    // All of the necessary fields here
+    let new_uuid = uuid::Uuid::new_v4();
+    let author = "chris".to_owned();
+    let paste_content = "some super cool content".to_owned();
+
+    // We will insert this struct into the map
+    let new_paste = Paste {
+        uuid: new_uuid,
+        author: author,
+        content: paste_content,
+    };
+
+    // Insert the paste in the in-memory map
+    map.insert(new_uuid.hyphenated().to_string(), new_paste);
+    // Redirect to "/{uuid}"
+    HttpResponse::Found()
+        .header(http::header::LOCATION, new_uuid.hyphenated().to_string())
+        .finish()
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     let port = 3000;
-    // We'll bind to 127.0.0.1:3000
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let data: Arc<Mutex<HashMap<&str, Paste>>> = Arc::new(Mutex::new(HashMap::new()));
+    println!("Running server on port {}", port);
 
-    // A `Service` is needed for every connection, so this
-    // creates one from our `hello_world` function.
-    let make_svc = make_service_fn(move |_conn| async {
-        // service_fn converts our function into a `Service`
-        Ok::<_, Infallible>(service_fn(router))
-    });
+    // Internally the web::Data wraps an Arc, so we just need to pass the RWLock here
+    let state: web::Data<RwLock<HashMap<String, Paste>>> =
+        web::Data::new(RwLock::new(HashMap::new()));
 
-    let server = Server::bind(&addr).serve(make_svc);
-    println!("Server started on {}", &addr);
-    println!("UUID4: {}", Uuid::new_v4());
-    println!("It is now: {}", Local::now());
-    // Run this server for... forever!
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
-    }
+    HttpServer::new(
+        // We need to move the state into the app closure here
+        move || {
+            App::new()
+                .app_data(state.clone()) // One app per connection, so we need to .clone() here
+                .service(index)
+                .service(paste)
+                .service(new_paste)
+        },
+    )
+    .bind(format!("127.0.0.1:{}", port))?
+    .run()
+    .await
 }

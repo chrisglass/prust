@@ -7,11 +7,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hyper = "0.13.9"
-tokio = {version = "0.2", features = ["full"]}
-futures = "0.3"
-handlebars = "3.5.1"
-serde_json = "1.0"
-sqlite = "0.25.3"
+actix-web = "3"
 uuid = { version = "0.4", features = ["serde", "v4"] }
 chrono = "0.4"

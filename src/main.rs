@@ -1,90 +1,119 @@
-extern crate chrono;
+extern crate actix_web;
 extern crate handlebars;
-extern crate hyper;
-extern crate serde_json;
 extern crate uuid;
 
-use chrono::prelude::*;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+extern crate serde;
+
+#[macro_use]
+extern crate serde_json;
+
+extern crate actix_files;
+
+use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
+
+use actix_files::Files;
+use handlebars::Handlebars;
+
+use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use uuid::Uuid;
+use std::sync::RwLock;
 
-#[derive(Debug)]
+/// Paste is our main "business object". It holds the pastes in memory.
+#[derive(Serialize, Debug)]
 struct Paste {
+    uuid: String,
     author: String,
-    paste: String,
-    created: DateTime<Local>,
+    content: String,
+    //created: DateTime<Local>,
 }
 
-fn get_index(_req: Request<Body>) -> Body {
-    Body::from("Try posting data to /echo")
+/// PostedPaste the struct that we'll deserialize the posted form into.
+/// actix form require that all fileds are exactly passed (no default values)
+#[derive(Deserialize, Debug)]
+struct PostedPaste {
+    author: String,
+    content: String,
 }
 
-fn get_paste(id: String) -> Body {
-    Body::from(format!("This is paste for id {}", id))
+fn render_paste_template(hb: web::Data<Handlebars>, paste_instance: &Paste) -> String {
+    let data = json!(paste_instance);
+    hb.render("paste", &data).unwrap()
 }
 
-async fn router(
-    req: Request<Body>,
-    // data: Mutex<HashMap<&str, Paste>>,
-) -> Result<Response<Body>, Infallible> {
-    let mut response = Response::new(Body::empty());
+#[get("/{uuid}")]
+async fn paste(
+    web::Path(uuid): web::Path<String>,
+    data: web::Data<RwLock<HashMap<String, Paste>>>,
+    hb: web::Data<Handlebars<'_>>,
+) -> impl Responder {
+    // In this case we are free to use only a read lock
+    let map = data.read().unwrap();
 
-    // match (req.method(), req.uri().path()) {
-    match req.method() {
-        &Method::GET => {
-            match req.uri().path() {
-                "/" => {
-                    // If the get is on the "/" assume that's the index.
-                    *response.body_mut() = get_index(req);
-                }
-                _ => {
-                    // If the get is for anything else, assume we're being asked about an ID
-                    let splits: Vec<&str> = req.uri().path().split("/").collect();
-                    let id = splits[1];
-                    *response.body_mut() = get_paste(id.to_owned());
-                }
-            }
-        }
-
-        &Method::POST => {
-            // Parse the form contents into a new Paste struct
-            // Generate a new uuid for the paste
-            // Save the Paste in the "DB"
-            // Return a redirect to the appropriate GET
-        }
-        _ => {
-            *response.status_mut() = StatusCode::NOT_FOUND;
-        }
+    match map.get(&uuid) {
+        Some(paste) => HttpResponse::Ok().body(render_paste_template(hb, paste)),
+        None => HttpResponse::NotFound().body("404 not found"),
     }
-
-    Ok(response)
 }
 
-#[tokio::main]
-async fn main() {
+#[post("/")]
+async fn new_paste(
+    data: web::Data<RwLock<HashMap<String, Paste>>>,
+    form: web::Form<PostedPaste>,
+) -> impl Responder {
+    // Our mutable state. We hold the write lock to the state here.
+    let mut map = data.write().unwrap();
+
+    // The uuid for our newly created paste
+    let new_uuid = uuid::Uuid::new_v4().to_hyphenated().to_string().to_owned();
+
+    // We will insert this struct into the map, so we need to clone() strings here.
+    let new_paste = Paste {
+        uuid: new_uuid.clone(),
+        author: form.author.clone(),
+        content: form.content.clone(),
+    };
+    // Insert the paste in the in-memory map
+    map.insert(new_uuid.clone(), new_paste);
+    // Redirect to "/{uuid}"
+    HttpResponse::Found()
+        .header(http::header::LOCATION, new_uuid)
+        .finish()
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     let port = 3000;
-    // We'll bind to 127.0.0.1:3000
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let data: Arc<Mutex<HashMap<&str, Paste>>> = Arc::new(Mutex::new(HashMap::new()));
+    println!("Running server on port {}", port);
 
-    // A `Service` is needed for every connection, so this
-    // creates one from our `hello_world` function.
-    let make_svc = make_service_fn(move |_conn| async {
-        // service_fn converts our function into a `Service`
-        Ok::<_, Infallible>(service_fn(router))
-    });
+    // Internally the web::Data wraps an Arc, so we just need to the RWLock here.
+    let state: web::Data<RwLock<HashMap<String, Paste>>> =
+        web::Data::new(RwLock::new(HashMap::new()));
 
-    let server = Server::bind(&addr).serve(make_svc);
-    println!("Server started on {}", &addr);
-    println!("UUID4: {}", Uuid::new_v4());
-    println!("It is now: {}", Local::now());
-    // Run this server for... forever!
-    if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
-    }
+    // Similarly we pass handlebars as an app data.
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_templates_directory(".html", "./templates")
+        .unwrap();
+
+    let handlebars_ref = web::Data::new(handlebars);
+
+    HttpServer::new(
+        // We need to move the state into the app closure here. This will be copied/moved for each of the connections
+        // since actix spawns one instance of the closure per connection
+        move || {
+            App::new()
+                .app_data(state.clone()) // One app per connection, so we need to .clone() here
+                .app_data(handlebars_ref.clone()) // Same here, one app per connection so we need to clone()
+                .service(Files::new("/static", "static/").index_file("index.html"))
+                .service(paste)
+                .service(new_paste)
+                // We mount the static directory to root, so if none of our handlers matched yet we'll try
+                // some static files.
+                .service(Files::new("/", "static/").index_file("index.html"))
+        },
+    )
+    .bind(format!("127.0.0.1:{}", port))?
+    .run()
+    .await
 }

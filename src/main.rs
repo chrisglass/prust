@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+/// Paste is our main "business object". It holds the pastes in memory.
 #[derive(Serialize, Debug)]
 struct Paste {
     uuid: String,
@@ -27,16 +28,13 @@ struct Paste {
     //created: DateTime<Local>,
 }
 
+/// PostedPaste the struct that we'll deserialize the posted form into.
+/// actix form require that all fileds are exactly passed (no default values)
 #[derive(Deserialize, Debug)]
-pub struct PostedPaste {
+struct PostedPaste {
     author: String,
     content: String,
 }
-
-// #[get("/")]
-// async fn index() -> impl Responder {
-//     HttpResponse::Ok().body(include_str!("../static/index.html"))
-// }
 
 fn render_paste_template(hb: web::Data<Handlebars>, paste_instance: &Paste) -> String {
     let data = json!(paste_instance);
@@ -61,25 +59,20 @@ async fn paste(
 #[post("/")]
 async fn new_paste(
     data: web::Data<RwLock<HashMap<String, Paste>>>,
-    // form: web::Form<PostedPaste>,
+    form: web::Form<PostedPaste>,
 ) -> impl Responder {
     // Our mutable state. We hold the write lock to the state here.
     let mut map = data.write().unwrap();
 
-    // All of the necessary fields here
+    // The uuid for our newly created paste
     let new_uuid = uuid::Uuid::new_v4().to_hyphenated().to_string().to_owned();
-    // let author = form.author.clone();
-    // let paste_content = form.content.clone();
-    let author = "Chris".to_owned();
-    let paste_content = "content".to_owned();
 
-    // We will insert this struct into the map
+    // We will insert this struct into the map, so we need to clone() strings here.
     let new_paste = Paste {
         uuid: new_uuid.clone(),
-        author: author,
-        content: paste_content,
+        author: form.author.clone(),
+        content: form.content.clone(),
     };
-
     // Insert the paste in the in-memory map
     map.insert(new_uuid.clone(), new_paste);
     // Redirect to "/{uuid}"
@@ -93,11 +86,11 @@ async fn main() -> std::io::Result<()> {
     let port = 3000;
     println!("Running server on port {}", port);
 
-    // Internally the web::Data wraps an Arc, so we just need to pass the RWLock here
+    // Internally the web::Data wraps an Arc, so we just need to the RWLock here.
     let state: web::Data<RwLock<HashMap<String, Paste>>> =
         web::Data::new(RwLock::new(HashMap::new()));
 
-    // Similarly we pass handlebars as an app data. this one doesn't have to be mut though
+    // Similarly we pass handlebars as an app data.
     let mut handlebars = Handlebars::new();
     handlebars
         .register_templates_directory(".html", "./templates")
@@ -106,16 +99,16 @@ async fn main() -> std::io::Result<()> {
     let handlebars_ref = web::Data::new(handlebars);
 
     HttpServer::new(
-        // We need to move the state into the app closure here
+        // We need to move the state into the app closure here. This will be copied/moved for each of the connections
+        // since actix spawns one instance of the closure per connection
         move || {
             App::new()
                 .app_data(state.clone()) // One app per connection, so we need to .clone() here
                 .app_data(handlebars_ref.clone()) // Same here, one app per connection so we need to clone()
-                // .service(index)
                 .service(Files::new("/static", "static/").index_file("index.html"))
                 .service(paste)
                 .service(new_paste)
-                // We mount the static directory to root now, so if none of our handlers matched yet we'll try
+                // We mount the static directory to root, so if none of our handlers matched yet we'll try
                 // some static files.
                 .service(Files::new("/", "static/").index_file("index.html"))
         },

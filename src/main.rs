@@ -2,6 +2,7 @@ extern crate actix_web;
 extern crate handlebars;
 extern crate uuid;
 
+extern crate chrono;
 extern crate serde;
 
 #[macro_use]
@@ -12,8 +13,8 @@ extern crate actix_files;
 use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
 
 use actix_files::Files;
+use chrono::Utc;
 use handlebars::Handlebars;
-
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ struct Paste {
     uuid: String,
     author: String,
     content: String,
-    //created: DateTime<Local>,
+    created: String,
 }
 
 /// PostedPaste the struct that we'll deserialize the posted form into.
@@ -67,11 +68,15 @@ async fn new_paste(
     // The uuid for our newly created paste
     let new_uuid = uuid::Uuid::new_v4().to_hyphenated().to_string().to_owned();
 
+    // the timestamp for our created paste
+    let time_created = Utc::now().to_rfc3339();
+
     // We will insert this struct into the map, so we need to clone() strings here.
     let new_paste = Paste {
         uuid: new_uuid.clone(),
         author: form.author.clone(),
         content: form.content.clone(),
+        created: time_created,
     };
     // Insert the paste in the in-memory map
     map.insert(new_uuid.clone(), new_paste);

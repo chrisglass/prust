@@ -23,10 +23,12 @@ TODO
 
 For now the basic functionality is there but there's a few things missing:
 
-- proper HTML
+- Proper HTML
 - Add some validation to the input (a paste should have a maximum size, so
   should the author field)
 - Add some HTML escalping to the rendering back (right now it's vulnerable to
   code injection)
 - Add a LRU-like invalidation to pastes (keeping e.g. 500 in memory).
 - Add an upper memory limit for the LRU cache instead of number of entries.
+- Add a Dockerfile
+- Add a Helm chart to make k8s deployments trivial

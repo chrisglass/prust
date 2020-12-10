@@ -1,15 +1,3 @@
-extern crate actix_web;
-extern crate handlebars;
-extern crate uuid;
-
-extern crate chrono;
-extern crate serde;
-
-#[macro_use]
-extern crate serde_json;
-
-extern crate actix_files;
-
 use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
 
 use actix_files::Files;
@@ -20,25 +8,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+fn default_uuid() -> String {
+    "".to_owned()
+}
+
 /// Paste is our main "business object". It holds the pastes in memory.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Paste {
+    #[serde(default = "default_uuid")]
     uuid: String,
     author: String,
     content: String,
+    #[serde(default = "default_uuid")]
     created: String,
 }
 
-/// PostedPaste the struct that we'll deserialize the posted form into.
-/// actix form require that all fileds are exactly passed (no default values)
-#[derive(Deserialize, Debug)]
-struct PostedPaste {
-    author: String,
-    content: String,
-}
-
 fn render_paste_template(hb: web::Data<Handlebars>, paste_instance: &Paste) -> String {
-    let data = json!(paste_instance);
+    let data = serde_json::json!(paste_instance);
     hb.render("paste", &data).unwrap()
 }
 
@@ -60,7 +46,7 @@ async fn paste(
 #[post("/")]
 async fn new_paste(
     data: web::Data<RwLock<HashMap<String, Paste>>>,
-    form: web::Form<PostedPaste>,
+    form: web::Form<Paste>,
 ) -> impl Responder {
     // Our mutable state. We hold the write lock to the state here.
     let mut map = data.write().unwrap();

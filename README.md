@@ -9,6 +9,9 @@ pastebin service written in Rust.
 It is mostly meant as a learning project, and to poke at the various web
 frameworks available.
 
+https://github.com/chrisglass/prust
+
+
 
 Running
 --------

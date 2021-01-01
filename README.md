@@ -1,7 +1,9 @@
 Prust
 ======
 
-Prust is a simple example of an in-memory pastebin service.
+Prust is a simple example of a pastebin service.
+
+It stores its data in a postgresql database.
 
 It doesn't come with a lot of bells and whistles but does work as a very basic
 pastebin service written in Rust.
@@ -12,11 +14,27 @@ frameworks available.
 https://github.com/chrisglass/prust
 
 
-
 Running
 --------
 
-Simply running `cargo run` on the top-level directory should work on a
+In order to run prust you'll need a running postgres database with an
+initialized schema before you can start the exectable (or simply `cargo run`).
+
+The provided `docker-compose.yaml` should allow you to get a non-persistent
+test database to run prust against in seconds:
+
+```
+docker-compose up
+```
+
+In another terminal, you should now be able to load the initial schema into
+the running docker container with:
+
+```
+cat schema/prust.sql | docker exec -i prust_database_1 psql -U prust
+```
+
+Running `cargo run` on the top-level directory should start `prust` on a
 reasonable Rust version (this was developped on stable on Ubuntu 20.10)
 
 The server is started on port 3000, to which you can point a web browser.

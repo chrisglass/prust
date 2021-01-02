@@ -54,17 +54,18 @@ async fn paste(
 
     match uuid_obj {
         Ok(ok_uuid) => {
-            let db_paste = sqlx::query("SELECT * FROM paste WHERE uuid = $1")
+            let row = sqlx::query("SELECT * FROM paste WHERE uuid = $1")
                 .bind(ok_uuid)
                 .map(struct_mapper) // transform the row into a Paste object
                 .fetch_one(pool.get_ref()) // Get a ref for the inner stuff
                 .await;
 
-            match db_paste {
+            match row {
                 Ok(paste) => HttpResponse::Ok().body(render_paste_template(hb, &paste)),
                 Err(_) => HttpResponse::NotFound().body("404 not found"),
             }
         }
+        // We consider than anything that doesn't parse as a valid UUID is "not found".
         Err(_) => HttpResponse::NotFound().body("404 not found"),
     }
 }

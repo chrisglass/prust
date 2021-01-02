@@ -1,0 +1,16 @@
+version: '3'
+services:
+  database:
+    image: "postgres" # use latest official postgres version
+    environment:
+      POSTGRES_USER: prust
+      POSTGRES_DB: prust
+      POSTGRES_PASSWORD: prust
+    # To keep the database data between containers, uncomment the two next lines.
+    # volumes:
+    #   - db:/var/lib/postgresql/data/
+    ports:
+      - "127.0.0.1:5432:5432"
+
+volumes:
+  db:

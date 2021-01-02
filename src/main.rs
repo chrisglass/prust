@@ -1,16 +1,6 @@
-extern crate actix_web;
-extern crate handlebars;
-extern crate uuid;
-
-extern crate chrono;
-extern crate serde;
-
-#[macro_use]
-extern crate serde_json;
-
-extern crate actix_files;
-
 use actix_web::{get, http, post, web, App, HttpResponse, HttpServer, Responder};
+
+//use uuid::Uuid;
 
 use actix_files::Files;
 use chrono::Utc;
@@ -20,75 +10,101 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::types::Uuid;
+use sqlx::{PgPool, Row}; // We need both PgRow and Row to get access to the methods defined on Row.
+
+fn default_string() -> String {
+    "".to_owned()
+}
+
 /// Paste is our main "business object". It holds the pastes in memory.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Paste {
+    #[serde(default = "default_string")]
     uuid: String,
     author: String,
     content: String,
+    #[serde(default = "default_string")]
     created: String,
 }
 
-/// PostedPaste the struct that we'll deserialize the posted form into.
-/// actix form require that all fileds are exactly passed (no default values)
-#[derive(Deserialize, Debug)]
-struct PostedPaste {
-    author: String,
-    content: String,
+fn render_paste_template(hb: web::Data<Handlebars>, paste_instance: &Paste) -> String {
+    let data = serde_json::json!(paste_instance);
+    hb.render("paste", &data).unwrap()
 }
 
-fn render_paste_template(hb: web::Data<Handlebars>, paste_instance: &Paste) -> String {
-    let data = json!(paste_instance);
-    hb.render("paste", &data).unwrap()
+fn struct_mapper(row: PgRow) -> Paste {
+    let row_uuid: Uuid = row.get("uuid");
+    Paste {
+        uuid: row_uuid.to_hyphenated().to_string(),
+        author: row.get("author"),
+        content: row.get("content"),
+        created: row.get("created"),
+    }
 }
 
 #[get("/{uuid}")]
 async fn paste(
     web::Path(uuid): web::Path<String>,
-    data: web::Data<RwLock<HashMap<String, Paste>>>,
     hb: web::Data<Handlebars<'_>>,
+    pool: web::Data<PgPool>, // This is a bit weird: although we pass a PgPoolOptions, we get a PgPool here.
 ) -> impl Responder {
-    // In this case we are free to use only a read lock
-    let map = data.read().unwrap();
+    let uuid_obj = Uuid::parse_str(&uuid);
 
-    match map.get(&uuid) {
-        Some(paste) => HttpResponse::Ok().body(render_paste_template(hb, paste)),
-        None => HttpResponse::NotFound().body("404 not found"),
+    match uuid_obj {
+        Ok(ok_uuid) => {
+            let row = sqlx::query("SELECT * FROM paste WHERE uuid = $1")
+                .bind(ok_uuid)
+                .map(struct_mapper) // transform the row into a Paste object
+                .fetch_one(pool.get_ref()) // Get a ref for the inner stuff
+                .await;
+
+            match row {
+                Ok(paste) => HttpResponse::Ok().body(render_paste_template(hb, &paste)),
+                Err(_) => HttpResponse::NotFound().body("404 not found"),
+            }
+        }
+        // We consider than anything that doesn't parse as a valid UUID is "not found".
+        Err(_) => HttpResponse::NotFound().body("404 not found"),
     }
 }
 
 #[post("/")]
 async fn new_paste(
-    data: web::Data<RwLock<HashMap<String, Paste>>>,
-    form: web::Form<PostedPaste>,
+    // data: web::Data<RwLock<HashMap<String, Paste>>>,
+    form: web::Form<Paste>,
+    pool: web::Data<PgPool>, // This is a bit weird: although we pass a PgPoolOptions, we get a PgPool here.
 ) -> impl Responder {
-    // Our mutable state. We hold the write lock to the state here.
-    let mut map = data.write().unwrap();
-
     // The uuid for our newly created paste
-    let new_uuid = uuid::Uuid::new_v4().to_hyphenated().to_string().to_owned();
+    let new_uuid = Uuid::new_v4();
 
     // the timestamp for our created paste
     let time_created = Utc::now().to_rfc3339();
 
-    // We will insert this struct into the map, so we need to clone() strings here.
-    let new_paste = Paste {
-        uuid: new_uuid.clone(),
-        author: form.author.clone(),
-        content: form.content.clone(),
-        created: time_created,
-    };
-    // Insert the paste in the in-memory map
-    map.insert(new_uuid.clone(), new_paste);
-    // Redirect to "/{uuid}"
+    let mut tx = pool.begin().await.unwrap();
+    let todo: (Uuid,) = sqlx::query_as(
+        "INSERT INTO paste (uuid, author, content, created) VALUES ($1, $2, $3, $4) RETURNING uuid",
+    )
+    .bind(new_uuid)
+    .bind(&form.author)
+    .bind(&form.content)
+    .bind(&time_created)
+    .fetch_one(&mut tx)
+    .await
+    .unwrap();
+
+    tx.commit().await.unwrap();
+
     HttpResponse::Found()
-        .header(http::header::LOCATION, new_uuid)
+        .header(http::header::LOCATION, todo.0.to_hyphenated().to_string())
         .finish()
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let port = 3000;
+    let port: u32 = 3000;
+    let max_connections: u32 = 5;
     println!("Running server on port {}", port);
 
     // Internally the web::Data wraps an Arc, so we just need to the RWLock here.
@@ -103,11 +119,21 @@ async fn main() -> std::io::Result<()> {
 
     let handlebars_ref = web::Data::new(handlebars);
 
+    let database_url = "postgres://prust:prust@localhost:5432/prust";
+
+    // TODO: handle errors
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(&database_url)
+        .await
+        .unwrap();
+
     HttpServer::new(
         // We need to move the state into the app closure here. This will be copied/moved for each of the connections
         // since actix spawns one instance of the closure per connection
         move || {
             App::new()
+                .data(pool.clone()) // Pass the database connection pool. This is already wrapped for us so data vs. app_data.
                 .app_data(state.clone()) // One app per connection, so we need to .clone() here
                 .app_data(handlebars_ref.clone()) // Same here, one app per connection so we need to clone()
                 .service(Files::new("/static", "static/").index_file("index.html"))
